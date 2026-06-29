@@ -1,0 +1,12 @@
+node_modules/
+.vercel/
+.env
+.env.local
+.env*.local
+*.log
+.DS_Store
+
+# Source artefacts (not needed for deployment)
+gtm.txt
+*.xlsx
+*.pdf

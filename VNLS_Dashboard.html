@@ -157,11 +157,26 @@ footer{padding:26px 0;color:var(--muted);font-size:12px;text-align:center;border
 .gpwwrap{position:relative}
 .gpwtog{position:absolute;right:11px;top:50%;transform:translateY(-50%);border:0;background:none;cursor:pointer;color:var(--muted);font-size:11.5px;font-weight:700;padding:4px}
 
+/* ===== Header controls + sync chip ===== */
+.hdrctl{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.hbtn{border:0;background:rgba(255,255,255,.16);color:#fff;font-weight:700;font-size:12.5px;padding:8px 13px;border-radius:9px;cursor:pointer;font-family:inherit;transition:.15s}
+.hbtn:hover{background:rgba(255,255,255,.28)}
+.hbtn:active{transform:translateY(1px)}
+.syncchip{display:inline-flex;align-items:center;gap:7px;background:rgba(255,255,255,.12);color:#fff;font-size:11.5px;font-weight:700;
+  padding:6px 11px;border-radius:20px;white-space:nowrap}
+.syncchip .dot{width:8px;height:8px;border-radius:50%;background:#f0c14b;flex:none;box-shadow:0 0 0 0 rgba(240,193,75,.6);animation:pulse 1.6s infinite}
+.syncchip.ok .dot{background:#5fe0a8;animation:none}
+.syncchip.off .dot{background:#fa9a8f;animation:none}
+.syncchip.busy .dot{background:#9bc2ff}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(240,193,75,.5)}70%{box-shadow:0 0 0 6px rgba(240,193,75,0)}100%{box-shadow:0 0 0 0 rgba(240,193,75,0)}}
+
 /* ===== Mobile ===== */
 @media(max-width:640px){
+  .hdrctl{width:100%;margin:12px 0 0;justify-content:flex-start;gap:6px}
+  .hbtn{padding:7px 11px;font-size:11.5px}.syncchip{font-size:10.5px;padding:5px 9px;order:-1}
   .wrap{padding:0 14px}
   header{padding:20px 0 16px}
-  .brandrow{gap:12px}.logo{width:42px;height:42px;font-size:18px;border-radius:11px}
+  .brandrow{gap:12px;flex-wrap:wrap}.logo{width:42px;height:42px;font-size:18px;border-radius:11px}
   .brandrow h1{font-size:18px}.brandrow .sub{font-size:11px}
   .vision{font-size:12px;margin-top:11px}
   .navinner{padding:6px 0}.navinner button{padding:7px 11px;font-size:12px}
@@ -222,9 +237,11 @@ footer{padding:26px 0;color:var(--muted);font-size:12px;text-align:center;border
         <h1>Valencia NutraCare LifeSciences</h1>
         <div class="sub">5-Year Financial Model &amp; Go-To-Market Plan · Investor Dashboard · Figures in ₹ Crore</div>
       </div>
-      <div style="margin-left:auto;display:flex;gap:8px">
-        <button id="printBtn" title="Print / Save as PDF" onclick="window.print()" style="border:0;background:rgba(255,255,255,.16);color:#fff;font-weight:700;font-size:12.5px;padding:8px 13px;border-radius:9px;cursor:pointer">⤓ Export PDF</button>
-        <button id="logoutBtn" title="Sign out" style="border:0;background:rgba(255,255,255,.16);color:#fff;font-weight:700;font-size:12.5px;padding:8px 13px;border-radius:9px;cursor:pointer">Sign out</button>
+      <div class="hdrctl">
+        <span id="syncChip" class="syncchip" title="Google Sheet connection status"><span class="dot"></span><span id="syncTxt">Connecting…</span></span>
+        <button id="syncNow" title="Pull latest from Google Sheet" class="hbtn">⟳ Sync</button>
+        <button id="printBtn" title="Print / Save as PDF" onclick="window.print()" class="hbtn">⤓ Export PDF</button>
+        <button id="logoutBtn" title="Sign out" class="hbtn">Sign out</button>
       </div>
     </div>
     <div class="vision">"Nutrition &amp; wellness solutions positioned to lead the $75 billion global nutrition care market by 2030 — nurturing healthier beginnings by delivering trusted nutrition at the right time, at scale."</div>
@@ -518,6 +535,88 @@ const CAT={
   'Children':[31.77,94.94,215.48,561.16,1050.48]
 };
 
+/* ============================== GOOGLE SHEET SYNC ============================== */
+/* Two-way sync with the Google Sheet via the Vercel serverless API (/api/sheet).
+   GET pulls model + inputs from the sheet; POST writes the editable inputs back.
+   If the API is not reachable (e.g. before env vars are configured), the dashboard
+   falls back to the built-in figures above so it always renders. */
+const CONFIG={
+  apiBase:'/api/sheet',
+  // Optional shared secret. Leave '' to disable; otherwise set the SAME value as the
+  // API_SECRET environment variable in Vercel. (Soft guard — see README on hard security.)
+  apiToken:''
+};
+const SYNC={connected:false, lastPull:null, lastPush:null, pushTimer:null, inFlight:false};
+function setSync(state,text){
+  const chip=document.getElementById('syncChip'), txt=document.getElementById('syncTxt');
+  if(!chip)return; chip.className='syncchip'+(state?(' '+state):''); if(text)txt.textContent=text;
+}
+function apiHeaders(){const h={'Content-Type':'text/plain'}; if(CONFIG.apiToken)h['x-vnls-token']=CONFIG.apiToken; return h;}
+
+// overwrite a const object/array in place so references stay valid
+function mut(target,src){ if(Array.isArray(target)&&Array.isArray(src)){target.length=0;src.forEach(v=>target.push(v));}
+  else if(target&&src&&typeof target==='object'){Object.keys(src).forEach(k=>{
+    if(Array.isArray(target[k])||(target[k]&&typeof target[k]==='object')) mut(target[k],src[k]); else target[k]=src[k];});} }
+
+function applyModelFromSheet(m){
+  if(!m)return;
+  if(m.base){const b=m.base;
+    ['contractRev','inhouseRev','thirdpartyRev','otherIncome','contractCOGS','inhouseCOGS','dep','finCost','capReq','capex','capEmployed','equity','basePlants']
+      .forEach(k=>{if(b[k])mut(BASE[k],b[k]);});
+    if(b.taxRate!=null)BASE.taxRate=b.taxRate; if(b.wacc!=null)BASE.wacc=b.wacc; if(b.baseKgDay!=null)BASE.baseKgDay=b.baseKgDay;
+    if(b.baseGram)mut(BASE.baseGram,b.baseGram);
+    if(b.contractY1)mut(BASE.contractY1,b.contractY1);
+  }
+  if(m.inhProdw)mut(INH_PRODW,m.inhProdw);
+  if(m.pop)mut(POP,m.pop); if(m.ch)mut(CH,m.ch); if(m.tier)mut(TIER,m.tier);
+  if(m.cat)Object.keys(m.cat).forEach(k=>{if(CAT[k])mut(CAT[k],m.cat[k]);});
+}
+function inputsFromSheet(inp){
+  if(!inp)return defaultDrivers();
+  const d=defaultDrivers();
+  ['ct1','ct2','cdays','cmonths','kgday','gPP','gLP','gIF','gCN'].forEach(k=>{if(inp[k]!=null)d[k]=inp[k];});
+  if(Array.isArray(inp.plants))d.plants=inp.plants.slice();
+  if(inp.ie)Object.keys(d.ie).forEach(k=>{if(Array.isArray(inp.ie[k]))d.ie[k]=inp.ie[k].slice();});
+  d.scenario=inp.scenario||'base';
+  return d;
+}
+function dToInputs(){
+  return {ct1:D.ct1,ct2:D.ct2,cdays:D.cdays,cmonths:D.cmonths,kgday:D.kgday,
+    gPP:D.gPP,gLP:D.gLP,gIF:D.gIF,gCN:D.gCN,plants:D.plants.slice(),
+    ie:JSON.parse(JSON.stringify(D.ie)),scenario:D.scenario||'base'};
+}
+async function loadFromSheet(){
+  setSync('busy','Syncing…');
+  try{
+    const res=await fetch(CONFIG.apiBase,{headers:apiHeaders(),cache:'no-store'});
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    if(!data||!data.ok)throw new Error(data&&data.error||'bad response');
+    applyModelFromSheet(data.model);
+    SYNC.sheetInputs=data.inputs||null;
+    SYNC.connected=true; SYNC.lastPull=Date.now();
+    setSync('ok','Sheet connected');
+    return true;
+  }catch(e){
+    SYNC.connected=false; setSync('off','Offline · built-in data');
+    return false;
+  }
+}
+async function pushToSheet(){
+  if(!SYNC.connected)return;            // don't push when sheet isn't wired up
+  clearTimeout(SYNC.pushTimer);
+  SYNC.pushTimer=setTimeout(async()=>{
+    if(SYNC.inFlight)return; SYNC.inFlight=true; setSync('busy','Saving…');
+    try{
+      const res=await fetch(CONFIG.apiBase,{method:'POST',headers:apiHeaders(),body:JSON.stringify({inputs:dToInputs()})});
+      if(!res.ok)throw new Error('HTTP '+res.status);
+      SYNC.lastPush=Date.now(); setSync('ok','Saved to sheet');
+      setTimeout(()=>{if(SYNC.connected)setSync('ok','Sheet connected');},1800);
+    }catch(e){ setSync('off','Save failed'); }
+    finally{ SYNC.inFlight=false; }
+  },700);
+}
+
 /* editable state */
 let D={};
 function defaultDrivers(){
@@ -689,7 +788,7 @@ function renderDrivers(){
   h+=`<tr class="total"><td>Total Indirect Expenses</td>`+R.ieTot.map(v=>`<td>${cr(v)}</td>`).join('')+'</tr>';
   h+='</tbody>'; document.getElementById('tblIE').innerHTML=h;
   document.querySelectorAll('#tblIE input').forEach(inp=>inp.addEventListener('change',e=>{
-    D.ie[e.target.dataset.cat][+e.target.dataset.yr]=parseFloat(e.target.value)||0; recalc();
+    D.ie[e.target.dataset.cat][+e.target.dataset.yr]=parseFloat(e.target.value)||0; recalc(); pushToSheet();
   }));
   // resulting PL
   const rows=[['Total Revenue',R.totRev,'total'],['COGS',R.cogs],['Indirect Exp',R.ieTot],
@@ -952,6 +1051,7 @@ function recalc(fromButton){
   for(let i=0;i<5;i++)renderYear(i);
   // refresh boxes/month display
   document.getElementById('d_cboxes').value=Math.round(contractBoxesPerDay(D.ct1,{PP:D.gPP,LP:D.gLP,CN:D.gCN})*D.cdays);
+  if(fromButton)pushToSheet();          // persist driver edits back to the sheet
 }
 function resetAll(){D=defaultDrivers();loadDriverInputs();recalc();}
 
@@ -964,8 +1064,8 @@ const SCEN={
 function applyScenario(name){
   const s=SCEN[name]; if(!s)return;
   D=defaultDrivers();
-  D.ct2=s.ct2; D.kgday=s.kgday; D.plants=s.plants.slice();
-  loadDriverInputs(); recalc();
+  D.ct2=s.ct2; D.kgday=s.kgday; D.plants=s.plants.slice(); D.scenario=name;
+  loadDriverInputs(); recalc(); pushToSheet();
   document.querySelectorAll('#scenRow [data-scen]').forEach(b=>{
     const active=b.dataset.scen===name;
     b.className='btn '+(active?'p':'g');
@@ -976,6 +1076,12 @@ function wireScenarios(){
     b.addEventListener('click',()=>applyScenario(b.dataset.scen)));
   const lo=document.getElementById('logoutBtn');
   if(lo)lo.addEventListener('click',()=>{sessionStorage.removeItem(SESSION_KEY);location.reload();});
+  const sn=document.getElementById('syncNow');
+  if(sn)sn.addEventListener('click',async()=>{
+    const ok=await loadFromSheet();
+    if(ok){D=inputsFromSheet(SYNC.sheetInputs);loadDriverInputs();recalc();renderGTM();renderProducts();
+      if(D.scenario)document.querySelectorAll('#scenRow [data-scen]').forEach(b=>b.className='btn '+(b.dataset.scen===D.scenario?'p':'g'));}
+  });
 }
 
 /* live-update on any production input change */
@@ -1002,10 +1108,11 @@ function buildNav(){
 
 /* ============================== APP INIT (after login) ============================== */
 let APP_READY=false;
-function startApp(){
+async function startApp(){
   if(APP_READY)return; APP_READY=true;
   document.getElementById('app').style.display='block';
-  D=defaultDrivers();
+  await loadFromSheet();                         // pull model + inputs from the sheet (falls back if offline)
+  D=inputsFromSheet(SYNC.sheetInputs);           // seed drivers from sheet (or defaults)
   buildNav();
   loadDriverInputs();
   wireInputs();
@@ -1013,6 +1120,8 @@ function startApp(){
   recalc();
   renderGTM();renderProducts();
   initAppendix();
+  // reflect any restored scenario selection
+  if(D.scenario){document.querySelectorAll('#scenRow [data-scen]').forEach(b=>b.className='btn '+(b.dataset.scen===D.scenario?'p':'g'));}
 }
 
 /* ============================== LOGIN GATE ============================== */

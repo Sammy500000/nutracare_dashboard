@@ -1,0 +1,10 @@
+{
+  "name": "vnls-investor-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Valencia NutraCare LifeSciences investor dashboard with two-way Google Sheets sync.",
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "googleapis": "^144.0.0"
+  }
+}
